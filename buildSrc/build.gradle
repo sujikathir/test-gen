@@ -1,0 +1,15 @@
+// buildSrc/build.gradle
+plugins {
+    id 'groovy'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation gradleApi()
+    implementation localGroovy()
+    implementation 'org.jacoco:org.jacoco.core:0.8.8'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.14.0'
+}

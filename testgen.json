@@ -1,0 +1,24 @@
+{
+  "coverage": {
+    "execFile": "build/jacoco/test.exec",
+    "classDir": "build/classes/java/main",
+    "sourceDir": "src/main/java",
+    "threshold": 80
+  },
+  "aiProvider": {
+    "type": "openai",
+    "apiKey": "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",
+    "model": "gpt-4"
+  },
+  "output": {
+    "dir": "src/test/java/generated"
+  },
+  "targetPackages": [
+    "com.example.*"
+  ],
+  "exclusions": [
+    "**/*Application",
+    "**/*Config",
+    "**/*Exception"
+  ]
+}

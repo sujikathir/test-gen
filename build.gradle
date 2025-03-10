@@ -1,0 +1,111 @@
+plugins {
+    id 'org.springframework.boot' version '3.2.0'
+    id 'io.spring.dependency-management' version '1.1.4'
+    id 'java'
+    id 'groovy'
+    //id 'io.testgen.gradle.testgen'
+    id 'jacoco'
+}
+apply from: 'src/main/groovy/io/testgen/gradle/TestGenPlugin.groovy'
+
+// Configure JaCoCo
+jacoco {
+    toolVersion = "0.8.11" // Update to the latest version that supports Java 23
+}
+
+jacocoTestReport {
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
+group = 'com.example'
+version = '0.0.1-SNAPSHOT'
+sourceCompatibility = '17'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation('org.springframework.boot:spring-boot-starter-validation') {
+        exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging'
+    }
+    //implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.2.0'
+    implementation gradleApi()
+    implementation localGroovy()
+    implementation 'org.jacoco:org.jacoco.core:0.8.8'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.14.0'
+    implementation 'commons-io:commons-io:2.11.0'
+
+    implementation('org.springframework.boot:spring-boot-starter-web') {
+        exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging'
+    }
+
+    implementation('org.springframework.boot:spring-boot-starter-webflux') {
+        exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging'
+    }
+
+    // Add this to use Log4j2 instead
+    implementation 'org.springframework.boot:spring-boot-starter-log4j2'
+
+
+
+    // For database if needed
+    // implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    // runtimeOnly 'com.h2database:h2'
+
+    // For testing
+    testImplementation 'io.rest-assured:rest-assured:5.3.2'
+    testImplementation 'io.rest-assured:json-path:5.3.2'
+    testImplementation 'io.rest-assured:xml-path:5.3.2'
+    testImplementation 'io.cucumber:cucumber-java:7.14.0'
+    testImplementation 'io.cucumber:cucumber-junit:7.14.0'
+    testImplementation 'io.cucumber:cucumber-spring:7.14.0'
+    testImplementation 'com.github.tomakehurst:wiremock-jre8:2.35.1'
+    testImplementation('org.springframework.boot:spring-boot-starter-test') {
+        exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging'
+    }
+    testImplementation 'io.rest-assured:rest-assured:5.3.2'
+
+    // For load testing
+    testImplementation 'io.gatling.highcharts:gatling-charts-highcharts:3.9.5'
+    testImplementation 'io.gatling:gatling-app:3.9.5'
+    testImplementation 'io.gatling:gatling-recorder:3.9.5'
+
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// Add test generation tasks
+task analyzeTestCoverage(type: JavaExec) {
+    description = 'Analyzes test coverage and identifies gaps'
+    group = 'Test Generation'
+
+    classpath = sourceSets.main.runtimeClasspath + sourceSets.test.runtimeClasspath
+    mainClass = 'io.testgen.core.GenericTestGenerator'
+
+
+
+    // Depend on test and jacoco report to ensure coverage data exists
+    dependsOn test, jacocoTestReport
+}
+
+task generateAiTests(dependsOn: analyzeTestCoverage) {
+    description = 'Generates tests using AI based on coverage analysis'
+    group = 'Test Generation'
+
+    doLast {
+        // This task just ensures that analyzeTestCoverage is run
+        println "Test generation completed."
+    }
+}
+
+configurations.all {
+    exclude group: 'ch.qos.logback', module: 'logback-classic'
+    exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging'
+}
