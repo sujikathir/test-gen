@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import subprocess
+import re
+import tempfile
+from typing import Dict, List, Optional, Tuple
+
+# Import your company's launchpad and LLaMA libraries
+# Update these import statements based on your actual library names
+try:
+    from your_company_library import LlamaModel, Launchpad, Guardrails
+except ImportError:
+    print("WARNING: Company LLaMA libraries not found. Using mock implementations for development.")
+    # Mock implementations for development without the actual libraries
+    class LlamaModel:
+        def __init__(self, integration_id):
+            self.integration_id = integration_id
+        
+        def generate(self, prompt, max_tokens=2000, temperature=0.2):
+            print(f"[MOCK] Generating with LLaMA model {self.integration_id}")
+            print(f"[MOCK] Prompt: {prompt[:100]}...")
+            return "// Mock test generated"
+    
+    class Launchpad:
+        def __init__(self):
+            pass
+    
+    class Guardrails:
+        def __init__(self, **kwargs):
+            self.config = kwargs
+        
+        def apply(self, text):
+            return text
+        
+        def apply_to_response(self, text):
+            return text
+
+
+class JavaProjectAnalyzer:
+    """Analyzes a Java project structure to understand dependencies and packages."""
+    
+    def __init__(self, project_root: str):
+        self.project_root = project_root
+        self.build_file = self._find_build_file()
+        self.source_dirs = self._find_source_dirs()
+        self.dependencies = self._extract_dependencies()
+        self.package_map = self._build_package_map()
+    
+    def _find_build_file(self) -> Optional[str]:
+        """Find the Gradle or Maven build file."""
+        gradle_file = os.path.join(self.project_root, "build.gradle")
+        maven_file = os.path.join(self.project_root, "pom.xml")
+        
+        if os.path.exists(gradle_file):
+            return gradle_file
+        elif os.path.exists(maven_file):
+            return maven_file
+        return None
+    
+    def _find_source_dirs(self) -> List[str]:
+        """Find all source directories in the project."""
+        source_dirs = []
+        
+        # Common Java source directories
+        potential_dirs = [
+            "src/main/java",
+            "src/main/kotlin",
+            "app/src/main/java",
+        ]
+        
+        for dir_path in potential_dirs:
+            full_path = os.path.join(self.project_root, dir_path)
+            if os.path.exists(full_path) and os.path.isdir(full_path):
+                source_dirs.append(full_path)
+        
+        return source_dirs
+    
+    def _extract_dependencies(self) -> List[str]:
+        """Extract dependencies from the build file."""
+        dependencies = []
+        
+        if not self.build_file:
+            return dependencies
+        
+        with open(self.build_file, 'r') as f:
+            content = f.read()
+        
+        if self.build_file.endswith('.gradle'):
+            # Simple regex for Gradle dependencies
+            dep_pattern = r'(implementation|testImplementation|api|compile)\s+[\'"]([^\'"]*)[\'"]\s*'
+            for match in re.finditer(dep_pattern, content):
+                dependencies.append(match.group(2))
+        elif self.build_file.endswith('.xml'):
+            # Simple regex for Maven dependencies
+            dep_pattern = r'<dependency>.*?<groupId>(.*?)</groupId>.*?<artifactId>(.*?)</artifactId>.*?<version>(.*?)</version>.*?</dependency>'
+            for match in re.finditer(dep_pattern, content, re.DOTALL):
+                group_id, artifact_id, version = match.groups()
+                dependencies.append(f"{group_id}:{artifact_id}:{version}")
+        
+        return dependencies
+    
+    def _build_package_map(self) -> Dict[str, List[str]]:
+        """Build a map of packages to class names."""
+        package_map = {}
+        
+        for source_dir in self.source_dirs:
+            for root, _, files in os.walk(source_dir):
+                for file in files:
+                    if file.endswith('.java'):
+                        file_path = os.path.join(root, file)
+                        package_name, class_name = self._extract_package_and_class(file_path)
+                        
+                        if package_name:
+                            if package_name not in package_map:
+                                package_map[package_name] = []
+                            package_map[package_name].append(class_name)
+        
+        return package_map
+    
+    def _extract_package_and_class(self, java_file_path: str) -> Tuple[str, str]:
+        """Extract package and class name from a Java file."""
+        package_name = ""
+        class_name = os.path.basename(java_file_path).replace('.java', '')
+        
+        with open(java_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            try:
+                content = f.read()
+                
+                # Extract package name
+                package_match = re.search(r'package\s+([a-zA-Z0-9_.]+)\s*;', content)
+                if package_match:
+                    package_name = package_match.group(1)
+                
+                # Extract class name (might be different from filename)
+                class_match = re.search(r'(public|private)\s+(class|interface|enum)\s+([a-zA-Z0-9_]+)', content)
+                if class_match:
+                    class_name = class_match.group(3)
+            except UnicodeDecodeError:
+                # Handle files that can't be decoded
+                pass
+        
+        return package_name, class_name
+    
+    def get_imports_for_class(self, java_file_path: str) -> List[str]:
+        """Get a list of imports used in a Java file."""
+        imports = []
+        
+        with open(java_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            try:
+                content = f.read()
+                import_pattern = r'import\s+([a-zA-Z0-9_.]+)\s*;'
+                imports = re.findall(import_pattern, content)
+            except UnicodeDecodeError:
+                # Handle files that can't be decoded
+                pass
+        
+        return imports
+
+
+class JavaTestGenerator:
+    def __init__(self, integration_id: str, guardrails_config: Dict, project_root: str):
+        self.launchpad = Launchpad()
+        self.model = LlamaModel(integration_id=integration_id)
+        self.guardrails = Guardrails(**guardrails_config)
+        self.project_analyzer = JavaProjectAnalyzer(project_root)
+        self.project_root = project_root
+    
+    def generate_unit_test(self, java_file_path: str) -> str:
+        """Generate a unit test for a Java class using LLaMA model."""
+        # Read the source file
+        with open(java_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            class_content = f.read()
+        
+        # Extract package and class information
+        package_name, class_name = self.project_analyzer._extract_package_and_class(java_file_path)
+        imports = self.project_analyzer.get_imports_for_class(java_file_path)
+        
+        # Create a context-aware prompt
+        prompt = self._create_test_generation_prompt(
+            class_content=class_content,
+            package_name=package_name,
+            class_name=class_name,
+            imports=imports,
+            dependencies=self.project_analyzer.dependencies
+        )
+        
+        # Apply guardrails to the prompt
+        safe_prompt = self.guardrails.apply(prompt)
+        
+        # Generate the test using the LLaMA model
+        response = self.model.generate(
+            prompt=safe_prompt,
+            max_tokens=3000,  # Increase token limit for comprehensive tests
+            temperature=0.2,  # Lower temperature for more deterministic output
+        )
+        
+        # Apply guardrails to the response
+        safe_response = self.guardrails.apply_to_response(response)
+        
+        # Extract just the Java code from the response
+        java_code = self._extract_java_code(safe_response)
+        
+        # Post-process the code to ensure it will compile
+        processed_code = self._post_process_test_code(
+            java_code=java_code,
+            package_name=package_name,
+            class_name=class_name
+        )
+        
+        return processed_code
+    
+    def _create_test_generation_prompt(
+        self, 
+        class_content: str, 
+        package_name: str, 
+        class_name: str,
+        imports: List[str],
+        dependencies: List[str]
+    ) -> str:
+        """Create a detailed prompt for test generation."""
+        test_framework_imports = ""
+        
+        # Determine test framework from dependencies
+        if any("junit-jupiter" in dep or "junit5" in dep or "junit:junit:5" in dep for dep in dependencies):
+            test_framework_imports = """
+            import org.junit.jupiter.api.Test;
+            import org.junit.jupiter.api.DisplayName;
+            import org.junit.jupiter.api.BeforeEach;
+            import org.junit.jupiter.api.AfterEach;
+            import static org.junit.jupiter.api.Assertions.*;
+            """
+        else:
+            # Default to JUnit 4 if no JUnit 5 is detected
+            test_framework_imports = """
+            import org.junit.Test;
+            import org.junit.Before;
+            import org.junit.After;
+            import static org.junit.Assert.*;
+            """
+        
+        prompt = f"""
+        Generate a comprehensive unit test for the following Java class:
+        
+        Package: {package_name}
+        Class: {class_name}
+        
+        Here are the imports used in the class:
+        {', '.join(imports)}
+        
+        Here's the class content:
+        ```java
+        {class_content}
+        ```
+        
+        Create a test class with the following characteristics:
+        1. The test class should be named `{class_name}Test`
+        2. The test class should be in the same package as the original class: `{package_name}`
+        3. Include necessary test framework imports:
+        {test_framework_imports}
+        
+        4. Include tests for all public methods
+        5. Handle edge cases and typical use cases
+        6. Create proper setup and teardown methods if needed
+        7. Use mocks or test doubles for external dependencies when appropriate
+        8. Include descriptive test method names or DisplayName annotations
+        9. Ensure all tests are independent and can run in any order
+        
+        Make sure the tests will compile and run successfully. Focus on practical tests that verify the actual behavior of the class.
+        
+        Return ONLY the complete Java test class with no additional explanations.
+        """
+        
+        return prompt
+    
+    def _extract_java_code(self, text: str) -> str:
+        """Extract Java code from the model response."""
+        # If the response contains code blocks, extract them
+        if "```java" in text and "```" in text:
+            start = text.find("```java") + 7
+            end = text.find("```", start)
+            return text[start:end].strip()
+        
+        # If the response doesn't have code blocks but looks like Java code
+        if text.strip().startswith("package") or text.strip().startswith("import") or text.strip().startswith("public class"):
+            return text.strip()
+        
+        # Otherwise, try to extract the most code-like part
+        lines = text.split('\n')
+        code_lines = [line for line in lines if not line.startswith('#') and not line.startswith('//') and line.strip()]
+        if code_lines:
+            return '\n'.join(code_lines)
+        
+        return text
+    
+    def _post_process_test_code(self, java_code: str, package_name: str, class_name: str) -> str:
+        """Post-process the generated test code to ensure it compiles."""
+        # Ensure package statement is present and correct
+        if "package" not in java_code:
+            java_code = f"package {package_name};\n\n{java_code}"
+        else:
+            # Replace incorrect package if present
+            java_code = re.sub(r'package\s+[a-zA-Z0-9_.]+\s*;', f"package {package_name};", java_code)
+        
+        # Ensure test class name is correct
+        test_class_name = f"{class_name}Test"
+        class_pattern = r'public\s+class\s+([a-zA-Z0-9_]+)'
+        class_match = re.search(class_pattern, java_code)
+        if class_match and class_match.group(1) != test_class_name:
+            java_code = re.sub(class_pattern, f"public class {test_class_name}", java_code)
+        
+        # Add common JUnit imports if they're missing
+        junit_imports = [
+            "import org.junit.jupiter.api.Test;",
+            "import static org.junit.jupiter.api.Assertions.*;"
+        ]
+        
+        for junit_import in junit_imports:
+            if junit_import not in java_code:
+                # Add after other imports or after package statement
+                if "import" in java_code:
+                    java_code = re.sub(r'(import [^;]+;\n)(?!import)', f"\\1{junit_import}\n", java_code, 1)
+                else:
+                    java_code = re.sub(r'(package [^;]+;\n)', f"\\1\n{junit_import}\n", java_code)
+        
+        return java_code
+    
+    def verify_test_compilation(self, test_file_path: str) -> bool:
+        """Verify that the generated test compiles."""
+        # Create a temporary directory for compilation
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Copy the test file to the temp directory
+            temp_test_file = os.path.join(temp_dir, os.path.basename(test_file_path))
+            with open(test_file_path, 'r') as src, open(temp_test_file, 'w') as dst:
+                dst.write(src.read())
+            
+            # Try to compile it with javac
+            try:
+                # Build the classpath
+                classpath = os.path.join(self.project_root, "build", "classes")
+                
+                # Run javac
+                result = subprocess.run(
+                    ["javac", "-cp", classpath, temp_test_file],
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.returncode != 0:
+                    print(f"Compilation failed: {result.stderr}")
+                    return False
+                return True
+            except Exception as e:
+                print(f"Error during compilation verification: {e}")
+                return False
+    
+    def run_generated_test(self, test_file_path: str) -> bool:
+        """Attempt to run the generated test using Gradle or Maven."""
+        # Determine the relative path from the test directory
+        rel_path = os.path.relpath(test_file_path, os.path.join(self.project_root, "src", "test", "java"))
+        
+        # Convert file path to class name
+        class_name = rel_path.replace(os.sep, ".").replace(".java", "")
+        
+        # Check if it's a Gradle or Maven project
+        if os.path.exists(os.path.join(self.project_root, "build.gradle")):
+            # Gradle project
+            try:
+                result = subprocess.run(
+                    ["./gradlew", "test", "--tests", class_name],
+                    cwd=self.project_root,
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.returncode != 0:
+                    print(f"Test execution failed: {result.stderr}")
+                    return False
+                return True
+            except Exception as e:
+                print(f"Error during test execution: {e}")
+                return False
+        elif os.path.exists(os.path.join(self.project_root, "pom.xml")):
+            # Maven project
+            try:
+                result = subprocess.run(
+                    ["mvn", "test", "-Dtest=" + class_name],
+                    cwd=self.project_root,
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.returncode != 0:
+                    print(f"Test execution failed: {result.stderr}")
+                    return False
+                return True
+            except Exception as e:
+                print(f"Error during test execution: {e}")
+                return False
+        
+        return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Generate Java unit tests using LLaMA model')
+    parser.add_argument('--integration-id', required=True, help='LLaMA integration ID')
+    parser.add_argument('--project-root', required=True, help='Java project root directory')
+    parser.add_argument('--source-file', help='Specific Java source file to generate test for')
+    parser.add_argument('--config', help='Path to guardrails config JSON file')
+    parser.add_argument('--verify', action='store_true', help='Verify test compilation and execution')
+    
+    args = parser.parse_args()
+    
+    # Load guardrails config if provided
+    guardrails_config = {}
+    if args.config and os.path.exists(args.config):
+        with open(args.config, 'r') as f:
+            guardrails_config = json.load(f)
+    else:
+        # Default guardrails configuration
+        guardrails_config = {
+            "safety_checks": True,
+            "code_quality_checks": True,
+            "max_tokens": 3000,
+            "prohibited_patterns": [
+                "System.exit",
+                "Runtime.getRuntime().exec"
+            ],
+            "required_test_annotations": [
+                "Test",
+                "DisplayName"
+            ]
+        }
+    
+    generator = JavaTestGenerator(args.integration_id, guardrails_config, args.project_root)
+    
+    if args.source_file:
+        # Generate test for a specific file
+        source_path = args.source_file
+        if not os.path.isabs(source_path):
+            source_path = os.path.join(args.project_root, source_path)
+        
+        if not os.path.exists(source_path):
+            print(f"Source file not found: {source_path}")
+            return
+        
+        # Determine the package and class name
+        package_name, class_name = generator.project_analyzer._extract_package_and_class(source_path)
+        
+        # Determine the test directory
+        main_dir = os.path.dirname(os.path.dirname(os.path.dirname(source_path)))
+        test_dir = os.path.join(main_dir, "test", "java")
+        
+        # Create package directory structure
+        if package_name:
+            package_path = package_name.replace('.', os.sep)
+            test_package_dir = os.path.join(test_dir, package_path)
+            os.makedirs(test_package_dir, exist_ok=True)
+            test_path = os.path.join(test_package_dir, f"{class_name}Test.java")
+        else:
+            test_path = os.path.join(test_dir, f"{class_name}Test.java")
+        
+        # Generate the test
+        print(f"Generating test for {source_path}")
+        test_code = generator.generate_unit_test(source_path)
+        
+        # Write the test to the test directory
+        with open(test_path, 'w') as f:
+            f.write(test_code)
+        
+        print(f"Generated test at {test_path}")
+        
+        # Verify the test if requested
+        if args.verify:
+            print("Verifying test compilation...")
+            if generator.verify_test_compilation(test_path):
+                print("Test compilation successful!")
+                print("Running test...")
+                if generator.run_generated_test(test_path):
+                    print("Test execution successful!")
+                else:
+                    print("Test execution failed. Please check the generated test.")
+            else:
+                print("Test compilation failed. Please check the generated test.")
+    else:
+        # Find all Java files in the source directories
+        for source_dir in generator.project_analyzer.source_dirs:
+            for root, _, files in os.walk(source_dir):
+                for file in files:
+                    if file.endswith('.java'):
+                        source_path = os.path.join(root, file)
+                        
+                        # Determine the package and class name
+                        package_name, class_name = generator.project_analyzer._extract_package_and_class(source_path)
+                        
+                        # Determine the test directory
+                        rel_path = os.path.relpath(source_path, source_dir)
+                        test_dir = os.path.join(args.project_root, "src", "test", "java")
+                        test_path = os.path.join(test_dir, rel_path.replace('.java', 'Test.java'))
+                        
+                        # Create necessary directories
+                        os.makedirs(os.path.dirname(test_path), exist_ok=True)
+                        
+                        # Generate the test
+                        print(f"Generating test for {source_path}")
+                        test_code = generator.generate_unit_test(source_path)
+                        
+                        # Write the test to the test directory
+                        with open(test_path, 'w') as f:
+                            f.write(test_code)
+                        
+                        print(f"Generated test at {test_path}")
+                        
+                        # Verify the test if requested
+                        if args.verify:
+                            print("Verifying test compilation...")
+                            if generator.verify_test_compilation(test_path):
+                                print("Test compilation successful!")
+                            else:
+                                print("Test compilation failed. Please check the generated test.")
+
+
+if __name__ == '__main__':
+    main()
